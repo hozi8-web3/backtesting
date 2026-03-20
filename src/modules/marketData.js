@@ -1,63 +1,76 @@
 /**
  * Market Data Module
  * Fetches real OHLCV candlestick data from Binance REST API
- * Supports paginated fetching for large datasets (1000+ candles)
+ * Supports time-based ranges (3D, 1W, 1M, 3M, 6M, 1Y) with paginated fetching
  */
 
 const BINANCE_API = 'https://api.binance.com/api/v3';
 const cache = new Map();
 
-const TIMEFRAME_MAP = {
-  '1m':  { interval: '1m',  limit: 1000 },
-  '3m':  { interval: '3m',  limit: 1000 },
-  '5m':  { interval: '5m',  limit: 1000 },
-  '15m': { interval: '15m', limit: 1000 },
-  '30m': { interval: '30m', limit: 1000 },
-  '1h':  { interval: '1h',  limit: 1000 },
-  '2h':  { interval: '2h',  limit: 1000 },
-  '4h':  { interval: '4h',  limit: 1000 },
-  '6h':  { interval: '6h',  limit: 1000 },
-  '8h':  { interval: '8h',  limit: 1000 },
-  '12h': { interval: '12h', limit: 1000 },
-  '1d':  { interval: '1d',  limit: 1000 },
-  '3d':  { interval: '3d',  limit: 1000 },
-  '1w':  { interval: '1w',  limit: 1000 },
-  '1M':  { interval: '1M',  limit: 500 },
+// Timeframe intervals supported by Binance
+const VALID_INTERVALS = [
+  '1m','3m','5m','15m','30m','1h','2h','4h','6h','8h','12h','1d','3d','1w','1M'
+];
+
+// Data range presets (in milliseconds)
+const RANGE_PRESETS = {
+  '3D':  3 * 24 * 60 * 60 * 1000,
+  '1W':  7 * 24 * 60 * 60 * 1000,
+  '1M':  30 * 24 * 60 * 60 * 1000,
+  '3M':  90 * 24 * 60 * 60 * 1000,
+  '6M':  180 * 24 * 60 * 60 * 1000,
+  '1Y':  365 * 24 * 60 * 60 * 1000,
 };
 
+let currentRange = '3M'; // default
+
 /**
- * Fetch OHLCV candles from Binance
- * Fetches up to `limit` candles (max 1000 per Binance API call).
- * For more than 1000, it paginate-fetches backwards in time.
+ * Set the data range 
+ */
+export function setDataRange(range) {
+  currentRange = range;
+}
+
+/**
+ * Get the current data range key
+ */
+export function getDataRange() {
+  return currentRange;
+}
+
+/**
+ * Fetch OHLCV candles from Binance for the given time range
+ * Automatically paginates to get the full range (Binance max 1000/request)
  * @param {string} symbol - e.g. 'BTCUSDT'
  * @param {string} timeframe - e.g. '1h'
- * @param {number} [limit] - number of candles (default from TIMEFRAME_MAP)
- * @returns {Promise<Array<{time: number, open: number, high: number, low: number, close: number, volume: number}>>}
+ * @param {string} [range] - e.g. '3M', '1Y'
+ * @returns {Promise<Array<{time, open, high, low, close, volume}>>}
  */
-export async function fetchCandles(symbol, timeframe, limit) {
-  const tf = TIMEFRAME_MAP[timeframe] || TIMEFRAME_MAP['1h'];
-  const totalLimit = limit || tf.limit;
-  const cacheKey = `${symbol}_${timeframe}_${totalLimit}`;
+export async function fetchCandles(symbol, timeframe, range) {
+  const effectiveRange = range || currentRange;
+  const interval = VALID_INTERVALS.includes(timeframe) ? timeframe : '1h';
+  const cacheKey = `${symbol}_${interval}_${effectiveRange}`;
   
   if (cache.has(cacheKey)) {
     return cache.get(cacheKey);
   }
 
-  let allCandles = [];
-  let remaining = totalLimit;
-  let endTime = undefined;
+  const rangeMs = RANGE_PRESETS[effectiveRange] || RANGE_PRESETS['3M'];
+  const endTime = Date.now();
+  const startTime = endTime - rangeMs;
 
-  // Paginated fetch — Binance max is 1000 per request
-  while (remaining > 0) {
-    const batchSize = Math.min(remaining, 1000);
+  let allCandles = [];
+  let fetchStart = startTime;
+
+  // Paginate forward from startTime to now
+  while (fetchStart < endTime) {
     const params = new URLSearchParams({
       symbol: symbol.toUpperCase(),
-      interval: tf.interval,
-      limit: String(batchSize),
+      interval: interval,
+      startTime: String(fetchStart),
+      endTime: String(endTime),
+      limit: '1000',
     });
-    if (endTime) {
-      params.set('endTime', String(endTime));
-    }
 
     const response = await fetch(`${BINANCE_API}/klines?${params}`);
     
@@ -77,25 +90,25 @@ export async function fetchCandles(symbol, timeframe, limit) {
       volume: parseFloat(k[5]),
     }));
 
-    // Prepend older candles
-    allCandles = candles.concat(allCandles);
-    remaining -= raw.length;
+    allCandles = allCandles.concat(candles);
 
-    // Next batch ends before the earliest candle we just got
-    endTime = raw[0][0] - 1;
+    // Break if we got less than 1000 (no more data)
+    if (raw.length < 1000) break;
 
-    // If we got fewer than requested, no more data available
-    if (raw.length < batchSize) break;
+    // Next batch starts after the last candle we got
+    fetchStart = raw[raw.length - 1][0] + 1;
   }
 
-  // Sort by time ascending & deduplicate
-  allCandles.sort((a, b) => a.time - b.time);
+  // Deduplicate by time
   const seen = new Set();
   allCandles = allCandles.filter(c => {
     if (seen.has(c.time)) return false;
     seen.add(c.time);
     return true;
   });
+
+  // Sort ascending
+  allCandles.sort((a, b) => a.time - b.time);
 
   cache.set(cacheKey, allCandles);
   return allCandles;

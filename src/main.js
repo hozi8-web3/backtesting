@@ -7,7 +7,7 @@ import './styles/global.css';
 import './styles/components.css';
 import './styles/layout.css';
 
-import { fetchCandles, clearCache } from './modules/marketData.js';
+import { fetchCandles, clearCache, setDataRange, getDataRange } from './modules/marketData.js';
 import { initChart, setData, setMarkers, clearOverlays, addLineSeries } from './modules/chart.js';
 import { initEditor, getCode, setCode, getEditorMode, setEditorMode } from './modules/editor.js';
 import { runBacktest, sma, ema } from './modules/strategyEngine.js';
@@ -98,7 +98,7 @@ async function loadData() {
     
     document.getElementById('status-candles').textContent = `${candleData.length} candles`;
     document.getElementById('status-pair').textContent = currentPair.replace('USDT', '/USDT');
-    document.getElementById('status-timeframe').textContent = currentTimeframe;
+    document.getElementById('status-timeframe').textContent = `${currentTimeframe} · ${getDataRange()}`;
     updateStatus('Ready');
   } catch (err) {
     console.error('Failed to load data:', err);
@@ -480,6 +480,9 @@ function setupEventListeners() {
   const mobileTf = document.getElementById('mobile-timeframe-bar');
   if (mobileTf) mobileTf.addEventListener('click', handleTimeframeClick);
 
+  // Range tabs
+  document.getElementById('range-tabs').addEventListener('click', handleRangeClick);
+
   // Results tabs
   document.getElementById('results-tabs').addEventListener('click', (e) => {
     const tab = e.target.closest('.tab');
@@ -627,12 +630,24 @@ function switchSidebarTab(tabName) {
 
 async function handleTimeframeClick(e) {
   const tab = e.target.closest('.tab');
-  if (!tab) return;
+  if (!tab || !tab.dataset.tf) return;
   document.querySelectorAll('#timeframe-tabs .tab, #mobile-timeframe-bar .tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tf === tab.dataset.tf);
+    if (t.dataset.tf) t.classList.toggle('active', t.dataset.tf === tab.dataset.tf);
   });
   currentTimeframe = tab.dataset.tf;
   clearCache();
+  await loadData();
+}
+
+async function handleRangeClick(e) {
+  const tab = e.target.closest('.tab');
+  if (!tab || !tab.dataset.range) return;
+  document.querySelectorAll('#range-tabs .tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.range === tab.dataset.range);
+  });
+  setDataRange(tab.dataset.range);
+  clearCache();
+  updateStatus(`Loading ${tab.dataset.range} data...`);
   await loadData();
 }
 
